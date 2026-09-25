@@ -906,6 +906,8 @@ tcp_listen_with_backlog_and_err(struct tcp_pcb *pcb, u8_t backlog, err_t *err)
 #if LWIP_TCP_PCB_NUM_EXT_ARGS
   /* copy over ext_args to listening pcb  */
   memcpy(&lpcb->ext_args, &pcb->ext_args, sizeof(pcb->ext_args));
+  /* Ownership moves to the listener; freeing the old PCB must not destroy it. */
+  memset(&pcb->ext_args, 0, sizeof(pcb->ext_args));
 #endif
   tcp_free(pcb);
 #if LWIP_CALLBACK_API
@@ -1702,133 +1704,6 @@ tcp_recv_null(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 #endif /* LWIP_CALLBACK_API */
 
 /**
- * Kills the oldest active connection that has a lower priority than 'prio'.
- *
- * @param prio minimum priority
- */
-static void
-tcp_kill_prio(u8_t prio)
-{
-  struct tcp_pcb *pcb, *inactive;
-  u32_t inactivity;
-  u8_t mprio;
-
-  mprio = LWIP_MIN(TCP_PRIO_MAX, prio);
-
-  /* We want to kill connections with a lower prio, so bail out if
-   * supplied prio is 0 - there can never be a lower prio
-   */
-  if (mprio == 0) {
-    return;
-  }
-
-  /* We only want kill connections with a lower prio, so decrement prio by one
-   * and start searching for oldest connection with same or lower priority than mprio.
-   * We want to find the connections with the lowest possible prio, and among
-   * these the one with the longest inactivity time.
-   */
-  mprio--;
-
-  inactivity = 0;
-  inactive = NULL;
-  for (pcb = tcp_active_pcbs; pcb != NULL; pcb = pcb->next) {
-        /* lower prio is always a kill candidate */
-    if ((pcb->prio < mprio) ||
-        /* longer inactivity is also a kill candidate */
-        ((pcb->prio == mprio) && ((u32_t)(tcp_ticks - pcb->tmr) >= inactivity))) {
-      inactivity = tcp_ticks - pcb->tmr;
-      inactive   = pcb;
-      mprio      = pcb->prio;
-    }
-  }
-  if (inactive != NULL) {
-    LWIP_DEBUGF(TCP_DEBUG, ("tcp_kill_prio: killing oldest PCB %p (%"S32_F")\n",
-                            (void *)inactive, inactivity));
-    tcp_abort(inactive);
-  }
-}
-
-/**
- * Kills the oldest connection that is in specific state.
- * Called from tcp_alloc() for LAST_ACK and CLOSING if no more connections are available.
- */
-static void
-tcp_kill_state(enum tcp_state state)
-{
-  struct tcp_pcb *pcb, *inactive;
-  u32_t inactivity;
-
-  LWIP_ASSERT("invalid state", (state == CLOSING) || (state == LAST_ACK));
-
-  inactivity = 0;
-  inactive = NULL;
-  /* Go through the list of active pcbs and get the oldest pcb that is in state
-     CLOSING/LAST_ACK. */
-  for (pcb = tcp_active_pcbs; pcb != NULL; pcb = pcb->next) {
-    if (pcb->state == state) {
-      if ((u32_t)(tcp_ticks - pcb->tmr) >= inactivity) {
-        inactivity = tcp_ticks - pcb->tmr;
-        inactive = pcb;
-      }
-    }
-  }
-  if (inactive != NULL) {
-    LWIP_DEBUGF(TCP_DEBUG, ("tcp_kill_closing: killing oldest %s PCB %p (%"S32_F")\n",
-                            tcp_state_str[state], (void *)inactive, inactivity));
-    /* Don't send a RST, since no data is lost. */
-    tcp_abandon(inactive, 0);
-  }
-}
-
-/**
- * Kills the oldest connection that is in TIME_WAIT state.
- * Called from tcp_alloc() if no more connections are available.
- */
-static void
-tcp_kill_timewait(void)
-{
-  struct tcp_pcb *pcb, *inactive;
-  u32_t inactivity;
-
-  inactivity = 0;
-  inactive = NULL;
-  /* Go through the list of TIME_WAIT pcbs and get the oldest pcb. */
-  for (pcb = tcp_tw_pcbs; pcb != NULL; pcb = pcb->next) {
-    if ((u32_t)(tcp_ticks - pcb->tmr) >= inactivity) {
-      inactivity = tcp_ticks - pcb->tmr;
-      inactive = pcb;
-    }
-  }
-  if (inactive != NULL) {
-    LWIP_DEBUGF(TCP_DEBUG, ("tcp_kill_timewait: killing oldest TIME-WAIT PCB %p (%"S32_F")\n",
-                            (void *)inactive, inactivity));
-    tcp_abort(inactive);
-  }
-}
-
-/* Called when allocating a pcb fails.
- * In this case, we want to handle all pcbs that want to close first: if we can
- * now send the FIN (which failed before), the pcb might be in a state that is
- * OK for us to now free it.
- */
-static void
-tcp_handle_closepend(void)
-{
-  struct tcp_pcb *pcb = tcp_active_pcbs;
-
-  while (pcb != NULL) {
-    struct tcp_pcb *next = pcb->next;
-    /* send pending FIN */
-    if (pcb->flags & TF_CLOSEPEND) {
-      LWIP_DEBUGF(TCP_DEBUG, ("tcp_handle_closepend: pending FIN\n"));
-      tcp_clear_flags(pcb, TF_CLOSEPEND);
-      tcp_close_shutdown_fin(pcb);
-    }
-    pcb = next;
-  }
-}
-
-/**
  * Allocate a new tcp_pcb structure.
  *
  * @param prio priority for the new pcb
@@ -1842,53 +1717,7 @@ tcp_alloc(u8_t prio)
   LWIP_ASSERT_CORE_LOCKED();
 
   pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
-  if (pcb == NULL) {
-    /* Try to send FIN for all pcbs stuck in TF_CLOSEPEND first */
-    tcp_handle_closepend();
-
-    /* Try killing oldest connection in TIME-WAIT. */
-    LWIP_DEBUGF(TCP_DEBUG, ("tcp_alloc: killing off oldest TIME-WAIT connection\n"));
-    tcp_kill_timewait();
-    /* Try to allocate a tcp_pcb again. */
-    pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
-    if (pcb == NULL) {
-      /* Try killing oldest connection in LAST-ACK (these wouldn't go to TIME-WAIT). */
-      LWIP_DEBUGF(TCP_DEBUG, ("tcp_alloc: killing off oldest LAST-ACK connection\n"));
-      tcp_kill_state(LAST_ACK);
-      /* Try to allocate a tcp_pcb again. */
-      pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
-      if (pcb == NULL) {
-        /* Try killing oldest connection in CLOSING. */
-        LWIP_DEBUGF(TCP_DEBUG, ("tcp_alloc: killing off oldest CLOSING connection\n"));
-        tcp_kill_state(CLOSING);
-        /* Try to allocate a tcp_pcb again. */
-        pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
-        if (pcb == NULL) {
-          /* Try killing oldest active connection with lower priority than the new one. */
-          LWIP_DEBUGF(TCP_DEBUG, ("tcp_alloc: killing oldest connection with prio lower than %d\n", prio));
-          tcp_kill_prio(prio);
-          /* Try to allocate a tcp_pcb again. */
-          pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
-          if (pcb != NULL) {
-            /* adjust err stats: memp_malloc failed multiple times before */
-            MEMP_STATS_DEC(err, MEMP_TCP_PCB);
-          }
-        }
-        if (pcb != NULL) {
-          /* adjust err stats: memp_malloc failed multiple times before */
-          MEMP_STATS_DEC(err, MEMP_TCP_PCB);
-        }
-      }
-      if (pcb != NULL) {
-        /* adjust err stats: memp_malloc failed multiple times before */
-        MEMP_STATS_DEC(err, MEMP_TCP_PCB);
-      }
-    }
-    if (pcb != NULL) {
-      /* adjust err stats: memp_malloc failed above */
-      MEMP_STATS_DEC(err, MEMP_TCP_PCB);
-    }
-  }
+  /* Resource pressure must not retire another connection or reuse TIME_WAIT. */
   if (pcb != NULL) {
     /* zero out the whole pcb, so there is no need to initialize members to zero */
     memset(pcb, 0, sizeof(struct tcp_pcb));
@@ -1930,6 +1759,13 @@ tcp_alloc(u8_t prio)
     pcb->keep_cnt   = TCP_KEEPCNT_DEFAULT;
 #endif /* LWIP_TCP_KEEPALIVE */
     pcb_tci_init(pcb);
+#ifdef LWIP_HOOK_TCP_PCB_ALLOCATED
+    /* Attach host-owned lifetime state before this PCB can be published. */
+    if (LWIP_HOOK_TCP_PCB_ALLOCATED(pcb) != ERR_OK) {
+      tcp_free(pcb);
+      return NULL;
+    }
+#endif
   }
   return pcb;
 }
@@ -1941,11 +1777,6 @@ tcp_alloc(u8_t prio)
  * The pcb is not put on any list until binding using tcp_bind().
  * If memory is not available for creating the new pcb, NULL is returned.
  * @see MEMP_NUM_TCP_PCB_LISTEN and MEMP_NUM_TCP_PCB
- *
- * @internal: Maybe there should be a idle TCP PCB list where these
- * PCBs are put on. Port reservation using tcp_bind() is implemented but
- * allocated pcbs that are not bound can't be killed automatically if wanting
- * to allocate a pcb with higher prio (@see tcp_kill_prio())
  *
  * @return a new tcp_pcb that initially is in state CLOSED
  */
