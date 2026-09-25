@@ -128,14 +128,9 @@ ip4_set_default_multicast_netif(struct netif *default_multicast_netif)
 struct netif *
 ip4_route_src(const ip4_addr_t *src, const ip4_addr_t *dest)
 {
-  if (src != NULL) {
-    /* when src==NULL, the hook is called from ip4_route(dest) */
-    struct netif *netif = LWIP_HOOK_IP4_ROUTE_SRC(src, dest);
-    if (netif != NULL) {
-      return netif;
-    }
-  }
-  return ip4_route(dest);
+  /* Caelum owns route selection; a rejected source must not fall back. */
+  LWIP_ASSERT_CORE_LOCKED();
+  return LWIP_HOOK_IP4_ROUTE_SRC(src, dest);
 }
 #endif /* LWIP_HOOK_IP4_ROUTE_SRC */
 
@@ -151,6 +146,10 @@ ip4_route_src(const ip4_addr_t *src, const ip4_addr_t *dest)
 struct netif *
 ip4_route(const ip4_addr_t *dest)
 {
+#ifdef LWIP_HOOK_IP4_ROUTE_SRC
+  LWIP_ASSERT_CORE_LOCKED();
+  return LWIP_HOOK_IP4_ROUTE_SRC(NULL, dest);
+#else
 #if !LWIP_SINGLE_NETIF
   struct netif *netif;
 
@@ -225,6 +224,7 @@ ip4_route(const ip4_addr_t *dest)
   }
 
   return netif_default;
+#endif /* LWIP_HOOK_IP4_ROUTE_SRC */
 }
 
 #if IP_FORWARD
@@ -407,6 +407,10 @@ return_noroute:
 static int
 ip4_input_accept(struct netif *netif)
 {
+#ifdef LWIP_HOOK_IP4_INPUT_ACCEPT
+  /* The embedding host may own local addresses beyond one address per netif. */
+  return LWIP_HOOK_IP4_INPUT_ACCEPT(netif, ip4_current_dest_addr());
+#else
   LWIP_DEBUGF(IP_DEBUG, ("ip_input: iphdr->dest 0x%"X32_F" netif->ip_addr 0x%"X32_F" (0x%"X32_F", 0x%"X32_F", 0x%"X32_F")\n",
                          ip4_addr_get_u32(ip4_current_dest_addr()), ip4_addr_get_u32(netif_ip4_addr(netif)),
                          ip4_addr_get_u32(ip4_current_dest_addr()) & ip4_addr_get_u32(netif_ip4_netmask(netif)),
@@ -440,6 +444,7 @@ ip4_input_accept(struct netif *netif)
 #endif /* LWIP_AUTOIP */
   }
   return 0;
+#endif /* LWIP_HOOK_IP4_INPUT_ACCEPT */
 }
 
 /**

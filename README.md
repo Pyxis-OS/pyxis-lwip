@@ -7,4 +7,4 @@ revision and local changes are recorded in [UPSTREAM.md](UPSTREAM.md); see
 Pyxis OS consumes this repository as `third_party/lwip`. Its configuration,
 freestanding headers, allocator/clock hooks and build rules live in
 `kernel/net/lwip` in [pyxis-os](https://git.internal/chronium/pyxis-os).
-Build from that parent checkout with `make lwip-port`.
+Build from that parent checkout with `make kernel` or `make image`.
