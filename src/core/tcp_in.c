@@ -804,7 +804,7 @@ tcp_process(struct tcp_pcb *pcb)
     if (pcb->state == SYN_SENT) {
       /* "In the SYN-SENT state (a RST received in response to an initial SYN),
           the RST is acceptable if the ACK field acknowledges the SYN." */
-      if (ackno == pcb->snd_nxt) {
+      if ((flags & TCP_ACK) && (ackno == pcb->snd_nxt)) {
         acceptable = 1;
       }
     } else {
