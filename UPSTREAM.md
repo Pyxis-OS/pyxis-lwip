@@ -40,6 +40,9 @@ in pyxis-os. The kernel uses the native build rules rather than an upstream buil
   to a listener, extension ownership moves to the new PCB: clear the old copy
   before freeing it to avoid destroying the transferred state twice. Caelum
   does not yet expose listening.
+- `src/core/tcp_in.c`: SYN-SENT accepts a reset only when ACK is set and its
+  acknowledgment number acknowledges the SYN. The acknowledgment field alone
+  is not meaningful without ACK (RFC 9293 section 3.10.7.3).
 - `src/core/tcp_out.c`: new
   `LWIP_HOOK_TCP_OUTPUT(pcb, pbuf, source, destination, ttl, tos, netif)` wraps
   both data and control IP submissions. The PCB is borrowed and may be NULL for
