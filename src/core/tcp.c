@@ -1257,7 +1257,12 @@ tcp_slowtmr_start:
               }
               /* snd_wnd not fully closed, split unsent head and fill window */
             } else {
-              if (tcp_split_unsent_seg(pcb, (u16_t)pcb->snd_wnd) == ERR_OK) {
+#ifdef LWIP_HOOK_TCP_SPLIT_UNSENT
+              err_t split_result = LWIP_HOOK_TCP_SPLIT_UNSENT(pcb, (u16_t)pcb->snd_wnd);
+#else
+              err_t split_result = tcp_split_unsent_seg(pcb, (u16_t)pcb->snd_wnd);
+#endif
+              if (split_result == ERR_OK) {
                 if (tcp_output(pcb) == ERR_OK) {
                   /* sending will cancel persist timer, else retry with current slot */
                   next_slot = 0;
