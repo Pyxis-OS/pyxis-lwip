@@ -39,7 +39,8 @@ in pyxis-os. The kernel uses the native build rules rather than an upstream buil
   existing extension-argument API and its destruction callback. When converting
   to a listener, extension ownership moves to the new PCB: clear the old copy
   before freeing it to avoid destroying the transferred state twice. Caelum
-  does not yet expose listening.
+  exposes TCP_LISTEN; its allocation hook attaches the connection before the
+  listening conversion, so the transferred extension is already live.
 - `src/core/tcp.c`: optional `LWIP_HOOK_TCP_SPLIT_UNSENT(pcb, split)` wraps
   the persist-timer unsent-segment split. Without the hook, the original direct
   `tcp_split_unsent_seg` call remains. The hook returns the error from one call
